@@ -17,21 +17,89 @@ def content_hash(content: str | bytes, algorithm: str = "sha256") -> str:
     return h.hexdigest()
 
 
+def canonical_dedup_key(parts: list[Any], version: int | str = 1) -> str:
+    """构造业务键的规范字符串。
+
+    v1 直接用 ``|`` 拼接，保留历史口径；这种方式会让
+    ``("A|B", "C")`` 与 ``("A", "B|C")`` 撞键。
+    v2 使用长度前缀编码，字段值中的分隔符不再能改变字段边界。
+    """
+    values = ["" if value is None else str(value) for value in parts]
+    if str(version).lower() in {"2", "v2", "product-dedup-v2"}:
+        return "v2:" + "".join(f"{len(value)}:{value}" for value in values)
+    return "|".join(values)
+
+
+def product_dedup_key(
+    item: dict[str, Any],
+    key_fields: list[str],
+    version: int | str = 1,
+) -> str:
+    """计算单条商品行的去重业务键（未哈希的规范形式）。"""
+    return canonical_dedup_key([item.get(field, "") for field in key_fields], version)
+
+
+def build_product_dedup_key_v2(
+    item_or_values: dict[str, Any] | list[Any] | tuple[Any, ...],
+    key_fields: list[str] | None = None,
+) -> str:
+    """构造版本 2 商品去重键。
+
+    只能从真实原始行或显式字段值构造；不要尝试从旧拼接字符串反解析，
+    因为字段值本身可能包含旧分隔符。
+    """
+    if isinstance(item_or_values, dict):
+        if not key_fields:
+            raise ValueError("从原始行构造 V2 键时必须提供 key_fields")
+        values = [item_or_values.get(field, "") for field in key_fields]
+    else:
+        values = list(item_or_values)
+    return canonical_dedup_key(values, 2)
+
+
+# 常见命名别名。
+build_dedup_key_v2 = build_product_dedup_key_v2
+migrate_dedup_key_v2 = build_product_dedup_key_v2
+
+
 def hash_dedup(
     items: list[dict[str, Any]],
     key_fields: list[str],
     algorithm: str = "sha256",
+    key_version: int | str = 1,
+    version: int | str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """基于内容哈希对数据行去重，返回去重结果和去重数。"""
+    """基于内容哈希对数据行去重，返回去重结果和去重数。
+
+    ``key_version`` 默认为 1，严格保留旧拼接键口径；迁移到版本 2 时
+    显式传 ``key_version=2`` 或 ``version=2``，使用无歧义的长度前缀键。
+    """
+    if version is not None:
+        key_version = version
     seen: set[str] = set()
     result: list[dict[str, Any]] = []
     for item in items:
-        parts = [str(item.get(f, "")) for f in key_fields]
-        h = content_hash("|".join(parts), algorithm)
+        canonical = product_dedup_key(item, key_fields, key_version)
+        h = content_hash(canonical, algorithm)
         if h not in seen:
             seen.add(h)
             result.append(item)
     return result, len(items) - len(result)
+
+
+def dedup_counts(
+    items: list[dict[str, Any]],
+    key_fields: list[str],
+    version: int | str = 1,
+) -> dict[str, int]:
+    """返回去重前、保留、去除三个标准计数。"""
+    deduped, removed = hash_dedup(items, key_fields, version=version)
+    return {
+        "original_count": len(items),
+        "deduped_count": len(deduped),
+        "retained_count": len(deduped),
+        "removed_count": removed,
+    }
 
 
 def text_similarity(a: str, b: str) -> float:

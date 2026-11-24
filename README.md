@@ -69,6 +69,27 @@ npm run dev
 | HTML清洗 | `html_cleaner` | 清洗模板 | 模板标识、适用站点、标签过滤 |
 | 增量同步 | `incremental_sync` | 同步水位 | 水位标识、来源配置、增量字段 |
 
+## 商品去重 V2 迁移
+
+后端内置甲（`甲` / `A` / `BATCH-JIA`）、乙（`乙` / `B` / `BATCH-YI`）两个迁移批次：
+
+- 甲可取回真实原始行，并用 `商品组=A|B, 地区=C` 与 `商品组=A, 地区=B|C` 保留旧拼接键的 `2/1/1` 计数；V2 无歧义键会分别保留两件商品，计数为 `2/2/0`。
+- 乙初始只有旧汇总，状态为 `待回填`，V2 计数不可用；补交真实原始行后调 `/continue` 才会重算、发布 V2 并重开旧回执。留档旧计数不会被改写，重复发布已通过批次会幂等返回原发布单。
+
+常用接口：
+
+```text
+POST /api/product-dedup/claim
+GET  /api/product-dedup/batches/{batch_id}
+POST /api/product-dedup/batches/{batch_id}/backfill
+POST /api/product-dedup/batches/{batch_id}/continue
+GET|POST /api/product-dedup/keys/lookup
+POST /api/chains/data-process          # 旧接口：保持 V1 字段和口径
+POST /api/chains/data-process-v2       # 新版：读取实际发布的 V2 数据并返回 read_version=2
+```
+
+前端左侧“商品去重迁移”页面提供领取核对、批次明细、原始行补交续做、业务键样本查询和新旧计数对照。
+
 ## 约定
 
 - 全部模块共享`frontend/src/views/WorkbenchView.vue|tsx`和一套资源路由。
